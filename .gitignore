@@ -1,0 +1,23 @@
+# binaries
+/bin/
+*.exe
+*.test
+*.out
+
+# runtime state
+/store/
+/logs/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.jsonl
+
+# local overrides
+credentials.local.json
+.env
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
