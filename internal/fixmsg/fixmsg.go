@@ -51,17 +51,18 @@ const (
 
 // Message types used by the gateway.
 const (
-	MsgHeartbeat         = "0"
-	MsgTestRequest       = "1"
-	MsgResendRequest     = "2"
-	MsgReject            = "3"
-	MsgSequenceReset     = "4"
-	MsgLogout            = "5"
-	MsgExecutionReport   = "8"
-	MsgOrderCancelReject = "9"
-	MsgLogon             = "A"
-	MsgNewOrderSingle    = "D"
-	MsgOrderCancelReq    = "F"
+	MsgHeartbeat          = "0"
+	MsgTestRequest        = "1"
+	MsgResendRequest      = "2"
+	MsgReject             = "3"
+	MsgSequenceReset      = "4"
+	MsgLogout             = "5"
+	MsgExecutionReport    = "8"
+	MsgOrderCancelReject  = "9"
+	MsgLogon              = "A"
+	MsgNewOrderSingle     = "D"
+	MsgOrderCancelReq     = "F"
+	MsgOrderCancelReplace = "G"
 )
 
 // Getter is satisfied by *quickfix.Header, *quickfix.Body and *quickfix.Trailer.
@@ -143,7 +144,11 @@ func OrderCancelReject(r oms.CancelReject) *quickfix.Message {
 	b.SetString(TagClOrdID, r.ClOrdID)
 	b.SetString(TagOrigClOrdID, r.OrigClOrdID)
 	b.SetString(TagOrdStatus, ch(byte(r.OrdStatus)))
-	b.SetString(TagCxlRejResponseTo, "1") // reject of an OrderCancelRequest
+	resp := r.ResponseTo
+	if resp == 0 {
+		resp = '1'
+	}
+	b.SetString(TagCxlRejResponseTo, ch(resp)) // '1' cancel request, '2' replace request
 	b.SetInt(TagCxlRejReason, int(r.Reason))
 	if r.Text != "" {
 		b.SetString(TagText, r.Text)
@@ -183,6 +188,15 @@ func NewOrderSingle(o NewOrder, now time.Time) *quickfix.Message {
 		b.SetString(TagPrice, o.Price)
 	}
 	b.SetString(TagTimeInForce, ch(byte(o.TIF)))
+	return m
+}
+
+// OrderCancelReplaceRequest builds a 35=G message. o.ClOrdID is the new ID;
+// qty and price are the new total quantity and limit price.
+func OrderCancelReplaceRequest(origClOrdID string, o NewOrder, now time.Time) *quickfix.Message {
+	m := NewOrderSingle(o, now)
+	m.Header.SetString(TagMsgType, MsgOrderCancelReplace)
+	m.Body.SetString(TagOrigClOrdID, origClOrdID)
 	return m
 }
 

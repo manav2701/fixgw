@@ -1,4 +1,4 @@
-.PHONY: build test race bench fuzz vet fmt run sim sim-gap sim-reconnect
+.PHONY: build test race bench fuzz vet fmt run sim sim-all sim-trading sim-gap sim-reconnect
 
 build:
 	go build -o bin/ ./cmd/...
@@ -26,6 +26,12 @@ run:
 
 sim:
 	go run ./cmd/fixsim -scenario orders
+
+sim-trading:
+	go run ./cmd/fixsim -scenario trading
+
+sim-all:
+	go run ./cmd/fixsim -scenario all
 
 sim-gap:
 	go run ./cmd/fixsim -scenario gap

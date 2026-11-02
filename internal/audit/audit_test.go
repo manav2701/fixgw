@@ -72,7 +72,10 @@ func TestTamperDetected(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 
 	edited := append([]string{}, lines...)
-	edited[2] = strings.Replace(edited[2], "orde", "ordX", 1)
+	edited[2] = strings.Replace(edited[2], "ordc", "ordX", 1)
+	if edited[2] == lines[2] {
+		t.Fatal("test bug: edit did not change the line")
+	}
 	os.WriteFile(path, []byte(strings.Join(edited, "\n")+"\n"), 0o640)
 	if _, err := Verify(path); err == nil {
 		t.Error("edited line not detected")
