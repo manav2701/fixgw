@@ -16,7 +16,8 @@ import (
 
 func main() {
 	var (
-		scenario  = flag.String("scenario", "orders", "heartbeat | orders | gap | reconnect | authfail | all")
+		scenario  = flag.String("scenario", "orders", "heartbeat | orders | risk | trading | gap | reconnect | authfail | all")
+		peer      = flag.String("peer", "DEMO", "second counterparty for the trading scenario")
 		addr      = flag.String("addr", "127.0.0.1:5001", "gateway address")
 		sender    = flag.String("sender", "CLIENT1", "SenderCompID (this client)")
 		target    = flag.String("target", "FIXGW", "TargetCompID (the gateway)")
@@ -54,11 +55,21 @@ func main() {
 		"gap":       func() *simclient.Result { return simclient.Gap(ctx, cfg) },
 		"reconnect": func() *simclient.Result { return simclient.Reconnect(ctx, cfg) },
 		"authfail":  func() *simclient.Result { return simclient.AuthFail(ctx, cfg) },
+		"risk":      func() *simclient.Result { return simclient.Risk(ctx, cfg) },
+		"trading": func() *simclient.Result {
+			pc, ok := creds[*peer]
+			if !ok {
+				fatal(fmt.Errorf("no credential for peer %q in %s", *peer, *credsPath))
+			}
+			peerCfg := cfg
+			peerCfg.SenderCompID, peerCfg.Username, peerCfg.Secret, peerCfg.Password = *peer, pc.Username, pc.Secret, pc.Password
+			return simclient.Trading(ctx, cfg, peerCfg)
+		},
 	}
 	names := []string{*scenario}
 	if *scenario == "all" {
 		// reconnect needs a fresh gateway store, so it is not part of "all".
-		names = []string{"authfail", "heartbeat", "orders", "gap"}
+		names = []string{"authfail", "heartbeat", "orders", "risk", "gap", "trading"}
 	}
 
 	failed := false

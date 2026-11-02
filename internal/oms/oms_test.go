@@ -87,6 +87,79 @@ func TestAcceptAndDuplicate(t *testing.T) {
 	}
 }
 
+func TestFillsAndAveragePrice(t *testing.T) {
+	r := NewRegistry()
+	ack, _ := r.Accept(newOrder("s1", "A1")) // Qty 1000
+	id := ack.OrderID
+
+	ex, err := r.Fill(id, 400, 5000000)
+	if err != nil || ex.ExecType != ExecTrade || ex.OrdStatus != StatusPartiallyFilled || ex.LeavesQty != 600 || ex.CumQty != 400 {
+		t.Fatalf("first fill: %+v %v", ex, err)
+	}
+	ex, err = r.Fill(id, 600, 5000100)
+	if err != nil || ex.OrdStatus != StatusFilled || ex.LeavesQty != 0 || ex.CumQty != 1000 {
+		t.Fatalf("second fill: %+v %v", ex, err)
+	}
+	if want := Price(5000060); ex.AvgPx != want { // (400*5000000 + 600*5000100) / 1000
+		t.Errorf("AvgPx = %d, want %d", ex.AvgPx, want)
+	}
+	if ex.Session != "s1" || ex.LastQty != 600 || ex.LastPx != 5000100 {
+		t.Errorf("addressing or last-fill fields wrong: %+v", ex)
+	}
+	if _, err := r.Fill(id, 1, 5000000); err == nil {
+		t.Error("filling a filled order must fail")
+	}
+	if _, _, rej := r.Replace("s1", "A1", "A2", 2000, 5000000); rej == nil || rej.Reason != CxlTooLate {
+		t.Errorf("replace of filled order: %+v", rej)
+	}
+}
+
+func TestFillRejectsOverfill(t *testing.T) {
+	r := NewRegistry()
+	ack, _ := r.Accept(newOrder("s1", "A1"))
+	if _, err := r.Fill(ack.OrderID, 1001, 5000000); err != ErrBadFill {
+		t.Errorf("overfill: %v", err)
+	}
+	if _, err := r.Fill(ack.OrderID, 0, 5000000); err != ErrBadFill {
+		t.Errorf("zero fill: %v", err)
+	}
+	if _, err := r.Fill("nope", 1, 1); err != ErrUnknownOrder {
+		t.Errorf("unknown order: %v", err)
+	}
+}
+
+func TestReplaceChainsClOrdID(t *testing.T) {
+	r := NewRegistry()
+	r.Accept(newOrder("s1", "A1"))
+	r.Fill("O0000000001", 300, 5000000)
+
+	o, ex, rej := r.Replace("s1", "A1", "A2", 800, 5100000)
+	if rej != nil {
+		t.Fatalf("replace rejected: %+v", rej)
+	}
+	if o.ClOrdID != "A2" || o.OrigClOrdID != "A1" || o.Qty != 800 || o.LeavesQty != 500 || o.Price != 5100000 {
+		t.Errorf("replaced order: %+v", o)
+	}
+	if ex.ExecType != ExecReplaced || ex.OrdStatus != StatusPartiallyFilled || ex.CumQty != 300 || ex.LeavesQty != 500 {
+		t.Errorf("replace report: %+v", ex)
+	}
+	if _, ok := r.Get("s1", "A1"); ok {
+		t.Error("superseded ClOrdID must no longer resolve")
+	}
+	if _, ok := r.Get("s1", "A2"); !ok {
+		t.Error("new ClOrdID must resolve")
+	}
+	if !r.Seen("s1", "A1") {
+		t.Error("superseded ClOrdID must stay burned")
+	}
+	if _, _, rej := r.Replace("s1", "A2", "A3", 300, 5100000); rej == nil || rej.Reason != CxlOther {
+		t.Errorf("replace to CumQty must be rejected: %+v", rej)
+	}
+	if _, _, rej := r.Replace("s1", "A1", "A4", 900, 5100000); rej == nil || rej.Reason != CxlUnknownOrder || rej.ResponseTo != '2' {
+		t.Errorf("replace via old ID: %+v", rej)
+	}
+}
+
 func TestCancelPaths(t *testing.T) {
 	r := NewRegistry()
 	if _, err := r.Accept(newOrder("s1", "A1")); err != nil {

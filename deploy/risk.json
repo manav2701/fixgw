@@ -1,0 +1,20 @@
+{
+  "default": {
+    "max_order_notional": 250000,
+    "max_gross_exposure": 2000000,
+    "max_open_orders": 200,
+    "collar_bps": 500,
+    "rate_per_sec": 50,
+    "rate_burst": 100
+  },
+  "sessions": {
+    "DEMO": {
+      "max_order_notional": 50000,
+      "max_gross_exposure": 250000,
+      "max_open_orders": 50,
+      "collar_bps": 300,
+      "rate_per_sec": 10,
+      "rate_burst": 30
+    }
+  }
+}

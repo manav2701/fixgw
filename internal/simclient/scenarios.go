@@ -37,11 +37,18 @@ const (
 	timeout = 8 * time.Second
 )
 
+// order builds a resting limit order well away from the other side, so one
+// client's buys and sells never cross each other: buys at 64,000, sells at 66,000.
 func order(id string, side oms.Side) fixmsg.NewOrder {
-	return fixmsg.NewOrder{
-		ClOrdID: id, Symbol: symbol, Side: side, Type: oms.Limit, TIF: oms.GTC,
-		Qty: "0.010000", Price: "65000.00",
+	px := "64000.00"
+	if side == oms.Sell {
+		px = "66000.00"
 	}
+	return limitOrder(id, side, "0.010000", px)
+}
+
+func limitOrder(id string, side oms.Side, qty, px string) fixmsg.NewOrder {
+	return fixmsg.NewOrder{ClOrdID: id, Symbol: symbol, Side: side, Type: oms.Limit, TIF: oms.GTC, Qty: qty, Price: px}
 }
 
 func start(ctx context.Context, cfg Config) (*Client, error) {
@@ -87,6 +94,7 @@ func Orders(ctx context.Context, cfg Config, n int) *Result {
 		return res
 	}
 	defer c.Stop()
+	defer c.CleanUp(ctx)
 
 	prefix := fmt.Sprintf("O%d-", time.Now().UnixNano()%1_000_000)
 	for i := 0; i < n; i++ {
@@ -185,6 +193,7 @@ func Gap(ctx context.Context, cfg Config) *Result {
 		return res
 	}
 	defer c.Stop()
+	defer c.CleanUp(ctx)
 	res.check(true, "logged on through chaos proxy")
 
 	p := fmt.Sprintf("G%d-", time.Now().UnixNano()%1_000_000)
@@ -251,6 +260,7 @@ func Reconnect(ctx context.Context, cfg Config) *Result {
 		return res
 	}
 	defer c.Stop()
+	defer c.CleanUp(ctx)
 
 	p := fmt.Sprintf("R%d-", time.Now().UnixNano()%1_000_000)
 	c.SendOrder(order(p+"1", oms.Buy))

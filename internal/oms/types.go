@@ -105,23 +105,28 @@ type Order struct {
 	ClOrdID     string // client-assigned (FIX tag 11)
 	OrigClOrdID string // set on replaces (FIX tag 41)
 	Session     string // owning FIX session
-	Account     string
-	Symbol      string
-	Side        Side
-	Type        OrdType
-	TIF         TimeInForce
-	Qty         Qty
-	Price       Price // zero for market orders
-	CumQty      Qty
-	LeavesQty   Qty
-	AvgPx       Price
-	Status      OrdStatus
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// Counterparty is the client's CompID. Risk limits are keyed by it.
+	Counterparty string
+	Account      string
+	Symbol       string
+	Side         Side
+	Type         OrdType
+	TIF          TimeInForce
+	Qty          Qty
+	Price        Price // zero for market orders
+	CumQty       Qty
+	LeavesQty    Qty
+	AvgPx        Price
+	Status       OrdStatus
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+
+	notional int64 // sum of fill price x fill qty, for AvgPx
 }
 
 // Execution is one execution report (FIX 35=8) to be sent to the client.
 type Execution struct {
+	Session      string // session this report is addressed to
 	ExecID       string
 	OrderID      string
 	ClOrdID      string
@@ -144,6 +149,8 @@ type Execution struct {
 
 // CancelReject is one OrderCancelReject (FIX 35=9) to be sent to the client.
 type CancelReject struct {
+	Session     string
+	ResponseTo  byte // CxlRejResponseTo(434): '1' cancel request, '2' replace request
 	OrderID     string
 	ClOrdID     string
 	OrigClOrdID string

@@ -47,6 +47,13 @@ type Report struct {
 	RejReason   string // OrdRejReason(103) or CxlRejReason(102)
 	Text        string
 	PossDup     bool
+
+	// Trade fields, as decimal strings exactly as received.
+	LastQty   string
+	LastPx    string
+	LeavesQty string
+	CumQty    string
+	AvgPx     string
 }
 
 // Stats counts session-level events the client observed.
@@ -71,6 +78,7 @@ type Client struct {
 	loggedOn bool
 	reports  []Report
 	stats    Stats
+	live     map[string]fixmsg.NewOrder
 }
 
 // New builds, but does not start, a client.
@@ -196,6 +204,11 @@ func (c *Client) FromApp(m *quickfix.Message, _ quickfix.SessionID) quickfix.Mes
 		OrdStatus:   fixmsg.Str(&m.Body, fixmsg.TagOrdStatus),
 		Text:        fixmsg.Str(&m.Body, fixmsg.TagText),
 		PossDup:     fixmsg.Str(&m.Header, fixmsg.TagPossDupFlag) == "Y",
+		LastQty:     fixmsg.Str(&m.Body, fixmsg.TagLastQty),
+		LastPx:      fixmsg.Str(&m.Body, fixmsg.TagLastPx),
+		LeavesQty:   fixmsg.Str(&m.Body, fixmsg.TagLeavesQty),
+		CumQty:      fixmsg.Str(&m.Body, fixmsg.TagCumQty),
+		AvgPx:       fixmsg.Str(&m.Body, fixmsg.TagAvgPx),
 	}
 	if mt == fixmsg.MsgOrderCancelReject {
 		r.RejReason = fixmsg.Str(&m.Body, fixmsg.TagCxlRejReason)
@@ -212,12 +225,71 @@ func (c *Client) FromApp(m *quickfix.Message, _ quickfix.SessionID) quickfix.Mes
 
 // SendOrder sends a NewOrderSingle.
 func (c *Client) SendOrder(o fixmsg.NewOrder) error {
+	c.track(o.ClOrdID, &o)
 	return quickfix.SendToTarget(fixmsg.NewOrderSingle(o, time.Now()), c.sid)
+}
+
+// SendReplace sends an OrderCancelReplaceRequest. o.ClOrdID is the new ID and
+// o.Qty / o.Price are the new total quantity and limit price.
+func (c *Client) SendReplace(origClOrdID string, o fixmsg.NewOrder) error {
+	c.mu.Lock()
+	delete(c.live, origClOrdID)
+	c.mu.Unlock()
+	c.track(o.ClOrdID, &o)
+	return quickfix.SendToTarget(fixmsg.OrderCancelReplaceRequest(origClOrdID, o, time.Now()), c.sid)
 }
 
 // SendCancel sends an OrderCancelRequest.
 func (c *Client) SendCancel(origClOrdID, clOrdID, symbol string, side oms.Side, qty string) error {
+	c.track(origClOrdID, nil)
 	return quickfix.SendToTarget(fixmsg.OrderCancelRequest(origClOrdID, clOrdID, symbol, side, qty, time.Now()), c.sid)
+}
+
+// track remembers an order the client believes may still be working, so
+// CleanUp can cancel it. A nil order forgets the ID.
+func (c *Client) track(clOrdID string, o *fixmsg.NewOrder) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.live == nil {
+		c.live = make(map[string]fixmsg.NewOrder)
+	}
+	if o == nil {
+		delete(c.live, clOrdID)
+		return
+	}
+	c.live[clOrdID] = *o
+}
+
+// CleanUp cancels every order the client has sent and not cancelled, so a
+// scenario leaves no resting orders behind on a long-running gateway. Orders
+// that already filled or were rejected simply draw an OrderCancelReject.
+func (c *Client) CleanUp(ctx context.Context) {
+	c.mu.Lock()
+	live := make(map[string]fixmsg.NewOrder, len(c.live))
+	for id, o := range c.live {
+		live[id] = o
+	}
+	c.mu.Unlock()
+	if len(live) == 0 || !c.LoggedOn() {
+		return
+	}
+	prefix := fmt.Sprintf("cu%d-", time.Now().UnixNano()%1_000_000)
+	var ids []string
+	n := 0
+	for id, o := range live {
+		n++
+		cid := fmt.Sprintf("%s%d", prefix, n)
+		ids = append(ids, cid)
+		quickfix.SendToTarget(fixmsg.OrderCancelRequest(id, cid, o.Symbol, o.Side, o.Qty, time.Now()), c.sid)
+	}
+	WaitFor(ctx, 3*time.Second, func() bool {
+		for _, cid := range ids {
+			if _, ok := c.Find(func(r Report) bool { return r.ClOrdID == cid }); !ok {
+				return false
+			}
+		}
+		return true
+	})
 }
 
 // Observing ---------------------------------------------------------------
