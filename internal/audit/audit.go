@@ -102,7 +102,10 @@ var redactRe = regexp.MustCompile(`(^|\x01)(554|96)=[^\x01]*`)
 
 // Redact masks Password(554) and RawData(96) values in a raw FIX message.
 func Redact(raw []byte) []byte {
-	if !bytes.Contains(raw, []byte("\x01554=")) && !bytes.Contains(raw, []byte("\x0196=")) {
+	// Fast path for the common case. A field at the very start of the buffer has
+	// no SOH before it, so check the prefix too (found by FuzzRedact).
+	if !bytes.Contains(raw, []byte("\x01554=")) && !bytes.Contains(raw, []byte("\x0196=")) &&
+		!bytes.HasPrefix(raw, []byte("554=")) && !bytes.HasPrefix(raw, []byte("96=")) {
 		return raw
 	}
 	return redactRe.ReplaceAll(raw, []byte("${1}${2}=***"))

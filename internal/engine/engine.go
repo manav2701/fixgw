@@ -238,7 +238,7 @@ func (e *Engine) newOrder(o oms.Order) []oms.Execution {
 	}
 	if rj := e.risk.Check(risk.Input{
 		Order: o, Instruments: e.ins, RefPx: e.refPrice(o.Symbol),
-		Open: e.reg.OpenWhere(func(x oms.Order) bool { return x.Counterparty == o.Counterparty }),
+		Open: e.reg.OpenForCounterparty(o.Counterparty),
 	}); rj != nil {
 		return []oms.Execution{e.reg.Reject(o, rj.Reason, rj.Text)}
 	}
@@ -311,6 +311,18 @@ func (e *Engine) closeOut(execs []oms.Execution, orderID, text string) []oms.Exe
 	return append(execs, ex)
 }
 
+// otherOpen is the counterparty's open orders excluding o.
+func (e *Engine) otherOpen(o oms.Order) []oms.Order {
+	all := e.reg.OpenForCounterparty(o.Counterparty)
+	out := all[:0]
+	for _, x := range all {
+		if x.OrderID != o.OrderID {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 func (e *Engine) replace(req ReplaceRequest) ([]oms.Execution, *oms.CancelReject) {
 	rejectWith := func(st oms.OrdStatus, orderID string, reason oms.CxlRejReason, text string) *oms.CancelReject {
 		return &oms.CancelReject{
@@ -338,9 +350,7 @@ func (e *Engine) replace(req ReplaceRequest) ([]oms.Execution, *oms.CancelReject
 		}
 		if rj := e.risk.Check(risk.Input{
 			Order: cand, Instruments: e.ins, RefPx: e.refPrice(cur.Symbol),
-			Open: e.reg.OpenWhere(func(x oms.Order) bool {
-				return x.Counterparty == cur.Counterparty && x.OrderID != cur.OrderID
-			}),
+			Open: e.otherOpen(cur),
 		}); rj != nil {
 			e.reg.Reject(oms.Order{Session: req.Session, ClOrdID: req.ClOrdID}, rj.Reason, rj.Text)
 			return nil, rejectWith(cur.Status, cur.OrderID, oms.CxlOther, rj.Text)

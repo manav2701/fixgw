@@ -25,9 +25,10 @@ type key struct{ session, clOrdID string }
 // the engine; the registry only records their outcome.
 type Registry struct {
 	mu     sync.Mutex
-	orders map[key]*Order    // by (session, current ClOrdID)
-	byID   map[string]*Order // by OrderID
-	used   map[key]struct{}  // every ClOrdID ever seen, including cancel and replace requests
+	orders map[key]*Order               // by (session, current ClOrdID)
+	byID   map[string]*Order            // by OrderID
+	used   map[key]struct{}             // every ClOrdID ever seen, including cancel and replace requests
+	open   map[string]map[string]*Order // non-terminal orders: counterparty -> OrderID
 	nextID atomic.Uint64
 	execID atomic.Uint64
 	now    func() time.Time
@@ -38,8 +39,43 @@ func NewRegistry() *Registry {
 		orders: make(map[key]*Order),
 		byID:   make(map[string]*Order),
 		used:   make(map[key]struct{}),
+		open:   make(map[string]map[string]*Order),
 		now:    func() time.Time { return time.Now().UTC() },
 	}
+}
+
+// track keeps the per-counterparty open index in step with o's status. Call it
+// after every status change, with r.mu held.
+func (r *Registry) track(o *Order) {
+	if o.Status.IsTerminal() {
+		if m := r.open[o.Counterparty]; m != nil {
+			delete(m, o.OrderID)
+			if len(m) == 0 {
+				delete(r.open, o.Counterparty)
+			}
+		}
+		return
+	}
+	m := r.open[o.Counterparty]
+	if m == nil {
+		m = make(map[string]*Order)
+		r.open[o.Counterparty] = m
+	}
+	m[o.OrderID] = o
+}
+
+// OpenForCounterparty returns copies of a counterparty's non-terminal orders, in
+// no particular order. It costs time proportional to that counterparty's open
+// orders only, which risk limits keep small; the pre-trade check calls it on
+// every order.
+func (r *Registry) OpenForCounterparty(cp string) []Order {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]Order, 0, len(r.open[cp]))
+	for _, o := range r.open[cp] {
+		out = append(out, *o)
+	}
+	return out
 }
 
 // NextExecID returns a gateway-unique execution ID.
@@ -93,6 +129,7 @@ func (r *Registry) Accept(o Order) (Execution, error) {
 	o.CreatedAt, o.UpdatedAt = now, now
 	r.orders[k] = &o
 	r.byID[o.OrderID] = &o
+	r.track(&o)
 	return r.exec(&o, ExecNew), nil
 }
 
@@ -143,6 +180,7 @@ func (r *Registry) Fill(orderID string, qty Qty, px Price) (Execution, error) {
 	o.notional += int64(px) * int64(qty)
 	o.AvgPx = Price((o.notional + int64(o.CumQty)/2) / int64(o.CumQty)) // round half up
 	o.Status, o.UpdatedAt = next, r.now()
+	r.track(o)
 
 	ex := r.exec(o, ExecTrade)
 	ex.LastQty, ex.LastPx = qty, px
@@ -162,6 +200,7 @@ func (r *Registry) Close(orderID, text string) (Execution, error) {
 		return Execution{}, ErrTooLate
 	}
 	o.Status, o.LeavesQty, o.UpdatedAt = StatusCanceled, 0, r.now()
+	r.track(o)
 	ex := r.exec(o, ExecCanceled)
 	ex.Text = text
 	return ex, nil
@@ -193,6 +232,7 @@ func (r *Registry) Cancel(session, origClOrdID, clOrdID string) (Execution, *Can
 		return Execution{}, reject(o.OrderID, o.Status, CxlTooLate, "too late to cancel")
 	}
 	o.Status, o.LeavesQty, o.UpdatedAt = StatusCanceled, 0, r.now()
+	r.track(o)
 	ex := r.exec(o, ExecCanceled)
 	ex.ClOrdID, ex.OrigClOrdID = clOrdID, origClOrdID
 	return ex, nil
