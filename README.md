@@ -16,7 +16,14 @@ orders, and writes a tamper-evident audit trail.
 | 3 | Matching engine, pre-trade risk, kill switch, cancel/replace | done |
 | 4 | Venue translation, WebSocket bridge, dashboard | done |
 | 5 | Conformance suite, benchmarks, fuzzing, backtest | done |
-| 6 | Container image, compose stack with HTTPS, free-hosting guide, live demo market | done (not yet deployed anywhere; see [docs/DEPLOY.md](docs/DEPLOY.md)) |
+| 6 | Container image, compose stack with HTTPS, free-hosting guide, live demo market | done, running at [fixgwtrade.duckdns.org](https://fixgwtrade.duckdns.org/) (see [docs/DEPLOY.md](docs/DEPLOY.md)) |
+
+**Live demo:** <https://fixgwtrade.duckdns.org/> is the dashboard of a gateway on a free GCP `e2-micro`
+VM, with a demo market maker and taker trading BTC/USD over real FIX sessions. It is a read-only feed
+of that demo market; passwords are redacted on the FIX tape. Orders live in memory and the demo
+restarts nightly.
+
+![Dashboard: order book, FIX tape and blotter updating live](docs/demo.gif)
 
 ## What works today
 
@@ -166,7 +173,7 @@ FIXGW_ADMIN_TOKEN=$(openssl rand -hex 24) docker compose up --build
 ```
 
 Open <http://127.0.0.1:8080/>. To put it on the internet for free, with HTTPS, see
-[docs/DEPLOY.md](docs/DEPLOY.md) (Oracle Cloud Always Free walkthrough).
+[docs/DEPLOY.md](docs/DEPLOY.md) (Oracle Cloud and GCP Always Free walkthroughs; the live demo runs on GCP).
 
 **From source.** Requires Go 1.26 or newer.
 

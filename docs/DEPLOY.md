@@ -1,9 +1,10 @@
 # Deploying fixgw
 
 Everything runs from `docker-compose.yml`: the gateway, a demo market maker so the
-dashboard is alive, and optionally Caddy for HTTPS. Tested here: the image builds,
-and `docker compose up` gives a gateway with a live book on the dashboard. Not
-tested here: a real cloud VM, the `public` profile with a real domain, the ARM build.
+dashboard is alive, and optionally Caddy for HTTPS. Tested: the image builds,
+`docker compose up` gives a gateway with a live book on the dashboard, and the
+`public` profile runs on a GCP `e2-micro` (amd64) behind a DuckDNS name with a
+Caddy certificate. Not tested: the Oracle steps and the arm64 build.
 
 ## Try it locally
 
@@ -58,6 +59,23 @@ long-lived TCP sessions and in-memory order state.
    ```
    The first build on a small ARM VM takes a few minutes. Then open
    `https://yourname.duckdns.org/`.
+
+## Google Cloud (the demo's host)
+
+Both clouds ask for a card. Check Google's current Always Free terms: at the time of
+writing, one `e2-micro` in `us-west1`, `us-central1` or `us-east1` with a standard disk.
+
+1. **Create the VM.** Compute Engine, Create instance: series E2, machine type
+   `e2-micro`, region `us-east1` (or one of the other two), boot disk Debian 13 or
+   Ubuntu 24.04 on a **Standard** persistent disk, and tick **Allow HTTP traffic** and
+   **Allow HTTPS traffic**. Remove the default snapshot schedule.
+2. **Reserve a static external IP** (VPC network, IP addresses), then point a DuckDNS
+   name at it.
+3. **Add swap**, because the Go build needs more than 1 GB:
+   `sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`
+4. Install Docker and continue with steps 5 to 7 above (there is no iptables step on GCP).
+
+The first build took about half an hour on the e2-micro, running unattended.
 
 ## Operating it
 
