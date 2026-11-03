@@ -1,0 +1,12 @@
+.git
+.github
+bin
+store
+logs
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+*.exe
+deploy/credentials.json
+.env

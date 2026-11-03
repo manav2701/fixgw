@@ -1,0 +1,12 @@
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy fixgw:8080
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		# The dashboard sets inline style attributes for the depth bars.
+		Content-Security-Policy "default-src 'self'; connect-src 'self' wss://{host}; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
+	}
+}

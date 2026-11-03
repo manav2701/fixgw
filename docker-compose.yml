@@ -1,0 +1,59 @@
+# Local:   docker compose up --build            dashboard on http://127.0.0.1:8080
+# Public:  docker compose --profile public up -d --build    (see docs/DEPLOY.md)
+
+services:
+  fixgw:
+    build: .
+    restart: unless-stopped
+    environment:
+      FIXGW_ADMIN_TOKEN: ${FIXGW_ADMIN_TOKEN:-}
+    command:
+      - -config=/app/deploy/fixgw.docker.cfg
+      - -creds=/app/deploy/credentials.json
+      - -risk=/app/deploy/risk.json
+      - -db=/data/fixgw.db
+      - -audit=/data/audit.jsonl
+      - -http=0.0.0.0:8080
+    volumes:
+      - data:/data
+      - ${CREDS_FILE:-./deploy/credentials.example.json}:/app/deploy/credentials.json:ro
+    ports:
+      # Bound to localhost unless you say otherwise. Publishing the FIX port to
+      # the internet means real counterparties: generate credentials first.
+      - "${FIX_BIND:-127.0.0.1}:5001:5001"
+      - "127.0.0.1:8080:8080"
+
+  # Keeps a live market on the gateway so the dashboard has something to show.
+  demo:
+    build: .
+    restart: unless-stopped
+    depends_on: [fixgw]
+    entrypoint: ["/app/fixsim"]
+    command:
+      - -scenario=demo
+      - -addr=fixgw:5001
+      - -creds=/app/deploy/credentials.json
+    volumes:
+      - ${CREDS_FILE:-./deploy/credentials.example.json}:/app/deploy/credentials.json:ro
+
+  # HTTPS in front of the dashboard. Needs DOMAIN pointing at this machine and
+  # ports 80 and 443 open; Caddy gets and renews the certificate itself.
+  caddy:
+    image: caddy:2
+    profiles: [public]
+    restart: unless-stopped
+    depends_on: [fixgw]
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  data:
+  caddy_data:
+  caddy_config:
