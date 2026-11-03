@@ -17,11 +17,13 @@ import (
 
 	"github.com/manav2701/fixgw/internal/audit"
 	"github.com/manav2701/fixgw/internal/auth"
+	"github.com/manav2701/fixgw/internal/bridge"
 	"github.com/manav2701/fixgw/internal/fixmsg"
 	"github.com/manav2701/fixgw/internal/fixsession"
 	"github.com/manav2701/fixgw/internal/oms"
 	"github.com/manav2701/fixgw/internal/risk"
 	"github.com/manav2701/fixgw/internal/simclient"
+	"github.com/manav2701/fixgw/internal/venue"
 )
 
 const (
@@ -42,9 +44,11 @@ type env struct {
 }
 
 type envOpts struct {
-	store string
-	risk  risk.Config
-	cod   bool
+	store  string
+	risk   risk.Config
+	cod    bool
+	venues []venue.Binding
+	hub    *bridge.Hub
 }
 
 func freePort(t *testing.T) string {
@@ -90,6 +94,7 @@ TargetCompID=CLIENT2
 		Settings: settings, Creds: creds, StoreKind: o.store,
 		DBPath: filepath.Join(dir, "fix.db"), AuditPath: e.auditPath,
 		Risk: o.risk, CancelOnDisconnect: o.cod, AdminToken: adminToken,
+		Hub: o.hub, Venues: o.venues, VenuePoll: 20 * time.Millisecond,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {

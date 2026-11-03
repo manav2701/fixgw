@@ -11,9 +11,11 @@ import (
 	"github.com/quickfixgo/quickfix"
 
 	"github.com/manav2701/fixgw/internal/auth"
+	"github.com/manav2701/fixgw/internal/bridge"
 	"github.com/manav2701/fixgw/internal/engine"
 	"github.com/manav2701/fixgw/internal/fixmsg"
 	"github.com/manav2701/fixgw/internal/oms"
+	"github.com/manav2701/fixgw/internal/venue"
 )
 
 // FIX BusinessRejectReason(380) value for an unsupported message type.
@@ -31,6 +33,9 @@ type App struct {
 
 	cancelOnDisconnect bool
 	sids               sync.Map // session string -> quickfix.SessionID
+
+	hub    *bridge.Hub   // optional dashboard feed
+	router *venue.Router // optional external venue routing
 }
 
 // NewApp wires the acceptor application.
@@ -51,11 +56,13 @@ func (a *App) OnCreate(sid quickfix.SessionID) {
 func (a *App) OnLogon(sid quickfix.SessionID) {
 	a.sessions.LoggedOn(sid.String())
 	a.log.Info("logon", "session", sid.String())
+	a.hub.Publish(bridge.KindSession, map[string]any{"session": sid.String(), "logged_on": true})
 }
 
 func (a *App) OnLogout(sid quickfix.SessionID) {
 	a.sessions.LoggedOut(sid.String())
 	a.log.Info("logout", "session", sid.String())
+	a.hub.Publish(bridge.KindSession, map[string]any{"session": sid.String(), "logged_on": false})
 	if a.cancelOnDisconnect {
 		execs, err := a.engine.CancelSession(sid.String(), "cancel on disconnect")
 		if err != nil {
@@ -188,6 +195,10 @@ func (a *App) onNewOrder(m *quickfix.Message, sid quickfix.SessionID) {
 
 func (a *App) onCancel(m *quickfix.Message, sid quickfix.SessionID) {
 	b := &m.Body
+	if a.router != nil && a.router.Owns(sid.String(), fixmsg.Str(b, fixmsg.TagOrigClOrdID)) {
+		a.router.Cancel(sid.String(), fixmsg.Str(b, fixmsg.TagOrigClOrdID), fixmsg.Str(b, fixmsg.TagClOrdID))
+		return
+	}
 	execs, rej, err := a.engine.Cancel(sid.String(), fixmsg.Str(b, fixmsg.TagOrigClOrdID), fixmsg.Str(b, fixmsg.TagClOrdID))
 	if err != nil {
 		a.log.Error("engine unavailable", "err", err)
@@ -203,6 +214,10 @@ func (a *App) onCancel(m *quickfix.Message, sid quickfix.SessionID) {
 func (a *App) onReplace(m *quickfix.Message, sid quickfix.SessionID) {
 	b := &m.Body
 	orig := fixmsg.Str(b, fixmsg.TagOrigClOrdID)
+	if a.router != nil && a.router.Owns(sid.String(), orig) {
+		a.sendCancelReject(sid, a.router.RejectReplace(sid.String(), orig, fixmsg.Str(b, fixmsg.TagClOrdID)))
+		return
+	}
 	f, _, text, ok := a.parseOrder(m, sid)
 	if !ok {
 		a.sendCancelReject(sid, oms.CancelReject{
@@ -239,12 +254,46 @@ func (a *App) Dispatch(execs []oms.Execution) {
 		if err := quickfix.SendToTarget(fixmsg.ExecutionReport(a.instruments[ex.Symbol], ex), sid); err != nil {
 			a.log.Error("send ExecutionReport", "session", ex.Session, "exec_id", ex.ExecID, "err", err)
 		}
+		a.hub.Publish(bridge.KindExec, execView(a.instruments[ex.Symbol], ex))
 	}
 }
 
 func (a *App) sendCancelReject(sid quickfix.SessionID, r oms.CancelReject) {
 	if err := quickfix.SendToTarget(fixmsg.OrderCancelReject(r), sid); err != nil {
 		a.log.Error("send OrderCancelReject", "session", sid.String(), "err", err)
+	}
+	a.hub.Publish(bridge.KindCxlRej, map[string]any{
+		"session": r.Session, "cl_ord_id": r.ClOrdID, "orig_cl_ord_id": r.OrigClOrdID,
+		"reason": int(r.Reason), "text": r.Text,
+	})
+}
+
+// sendCancelRejectTo is sendCancelReject for callers that only know the session
+// name, such as the venue router.
+func (a *App) sendCancelRejectTo(r oms.CancelReject) {
+	v, ok := a.sids.Load(r.Session)
+	if !ok {
+		a.log.Warn("cancel reject for unknown session", "session", r.Session)
+		return
+	}
+	a.sendCancelReject(v.(quickfix.SessionID), r)
+}
+
+// execView is the dashboard's rendering of an execution report: quantities and
+// prices as decimal strings in the instrument's own precision.
+func execView(ins oms.Instrument, ex oms.Execution) map[string]any {
+	side := "BUY"
+	if ex.Side == oms.Sell {
+		side = "SELL"
+	}
+	return map[string]any{
+		"session": ex.Session, "exec_id": ex.ExecID, "order_id": ex.OrderID,
+		"cl_ord_id": ex.ClOrdID, "orig_cl_ord_id": ex.OrigClOrdID, "symbol": ex.Symbol, "side": side,
+		"exec_type": string(rune(ex.ExecType)), "ord_status": string(rune(ex.OrdStatus)),
+		"qty": ins.FormatQty(ex.OrderQty), "price": ins.FormatPrice(ex.Price),
+		"last_qty": ins.FormatQty(ex.LastQty), "last_px": ins.FormatPrice(ex.LastPx),
+		"cum_qty": ins.FormatQty(ex.CumQty), "leaves_qty": ins.FormatQty(ex.LeavesQty),
+		"avg_px": ins.FormatPrice(ex.AvgPx), "text": ex.Text, "reject_reason": int(ex.RejectReason),
 	}
 }
 
