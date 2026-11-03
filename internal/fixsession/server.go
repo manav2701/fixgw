@@ -20,9 +20,11 @@ import (
 
 	"github.com/manav2701/fixgw/internal/audit"
 	"github.com/manav2701/fixgw/internal/auth"
+	"github.com/manav2701/fixgw/internal/bridge"
 	"github.com/manav2701/fixgw/internal/engine"
 	"github.com/manav2701/fixgw/internal/oms"
 	"github.com/manav2701/fixgw/internal/risk"
+	"github.com/manav2701/fixgw/internal/venue"
 )
 
 // Config assembles a Server.
@@ -44,6 +46,14 @@ type Config struct {
 	// they are disabled.
 	AdminToken string
 
+	// Hub receives the dashboard event feed. Optional.
+	Hub *bridge.Hub
+	// Venues routes the listed symbols to external exchanges instead of the
+	// internal book. Optional.
+	Venues []venue.Binding
+	// VenuePoll is how often live venue orders are reconciled (default 1s).
+	VenuePoll time.Duration
+
 	Logger *slog.Logger
 }
 
@@ -53,6 +63,9 @@ type Server struct {
 	Orders   *oms.Registry
 	Engine   *engine.Engine
 	Risk     *risk.Risk
+	Router   *venue.Router // nil when no symbol is routed
+	Hub      *bridge.Hub
+	ins      oms.Instruments
 
 	adminToken string
 	app        *App
@@ -90,8 +103,25 @@ func NewServer(cfg Config) (*Server, error) {
 		cfg.Risk = risk.DefaultConfig()
 	}
 
-	s := &Server{Sessions: NewRegistry(), Orders: oms.NewRegistry(), Risk: risk.New(cfg.Risk), adminToken: cfg.AdminToken}
+	s := &Server{Sessions: NewRegistry(), Orders: oms.NewRegistry(), Risk: risk.New(cfg.Risk), adminToken: cfg.AdminToken,
+		Hub: cfg.Hub, ins: cfg.Instruments}
 	s.Engine = engine.New(s.Orders, cfg.Instruments, s.Risk, cfg.Logger)
+	if len(cfg.Venues) > 0 {
+		for _, b := range cfg.Venues {
+			if _, ok := cfg.Instruments[b.Spec.Symbol]; !ok {
+				return nil, fmt.Errorf("fixsession: venue route for unknown symbol %q", b.Spec.Symbol)
+			}
+		}
+		s.Router = venue.NewRouter(venue.Config{
+			Registry: s.Orders, Instruments: cfg.Instruments, Bindings: cfg.Venues,
+			// s.app does not exist yet; the closures run only after it does.
+			Emit:             func(e []oms.Execution) { s.app.Dispatch(e) },
+			EmitCancelReject: func(r oms.CancelReject) { s.app.sendCancelRejectTo(r) },
+			Events:           func(kind string, data any) { s.Hub.Publish(kind, data) },
+			PollInterval:     cfg.VenuePoll, Logger: cfg.Logger,
+		})
+		s.Engine.SetRouter(s.Router)
+	}
 
 	var storeFactory quickfix.MessageStoreFactory
 	switch cfg.StoreKind {
@@ -130,7 +160,8 @@ func NewServer(cfg Config) (*Server, error) {
 
 	s.app = NewApp(auth.NewAuthenticator(cfg.Creds, cfg.MaxSkew), s.Orders, s.Engine, cfg.Instruments,
 		s.Sessions, cfg.CancelOnDisconnect, cfg.Logger)
-	acc, err := quickfix.NewAcceptor(s.app, storeFactory, cfg.Settings, NewLogFactory(s.audit, cfg.Logger))
+	s.app.hub, s.app.router = cfg.Hub, s.Router
+	acc, err := quickfix.NewAcceptor(s.app, storeFactory, cfg.Settings, NewLogFactory(s.audit, cfg.Hub, cfg.Logger))
 	if err != nil {
 		s.Stop()
 		return nil, err
@@ -146,6 +177,9 @@ func (s *Server) Start() error {
 		s.Engine.Stop()
 		return err
 	}
+	if s.Router != nil {
+		s.Router.Start()
+	}
 	s.started.Store(true)
 	return nil
 }
@@ -159,7 +193,60 @@ func (s *Server) KillSwitch(scope string, on, massCancel bool) (cancelled int, e
 		return 0, err
 	}
 	s.app.Dispatch(execs)
+	s.Hub.Publish(bridge.KindHalt, map[string]any{"scope": scope, "halted": on, "mass_cancel": massCancel, "orders_cancelled": len(execs)})
 	return len(execs), nil
+}
+
+// Source adapts the server to the bridge's read-only view.
+func (s *Server) Source() bridge.Source { return source{s} }
+
+type source struct{ s *Server }
+
+func (b source) Sessions() any { return b.s.Sessions.Snapshot() }
+func (b source) OpenOrders() any {
+	open := b.s.Orders.Open()
+	out := make([]map[string]any, 0, len(open))
+	for _, o := range open {
+		out = append(out, orderView(b.s.ins[o.Symbol], o))
+	}
+	return out
+}
+func (b source) Symbols() []string { return b.s.ins.Symbols() }
+func (b source) Halted() bool      { return b.s.Risk.Halted("") }
+
+// bookView is a book snapshot plus the decimals needed to render its
+// fixed-point prices and quantities.
+type bookView struct {
+	engine.Snapshot
+	PriceDecimals int    `json:"price_decimals"`
+	QtyDecimals   int    `json:"qty_decimals"`
+	Routed        string `json:"routed,omitempty"` // set when the symbol trades at an external venue
+}
+
+func (b source) Book(symbol string, depth int) (any, bool, error) {
+	snap, ok, err := b.s.Engine.Snapshot(symbol, depth)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	ins := b.s.ins[symbol]
+	v := bookView{Snapshot: snap, PriceDecimals: ins.PriceDecimals, QtyDecimals: ins.QtyDecimals}
+	if b.s.Router != nil && b.s.Router.Handles(symbol) {
+		v.Routed = b.s.Router.VenueName(symbol)
+	}
+	return v, true, nil
+}
+
+// orderView renders an open order for the dashboard.
+func orderView(ins oms.Instrument, o oms.Order) map[string]any {
+	side := "BUY"
+	if o.Side == oms.Sell {
+		side = "SELL"
+	}
+	return map[string]any{
+		"session": o.Session, "order_id": o.OrderID, "cl_ord_id": o.ClOrdID, "symbol": o.Symbol, "side": side,
+		"ord_status": string(rune(o.Status)), "qty": ins.FormatQty(o.Qty), "price": ins.FormatPrice(o.Price),
+		"cum_qty": ins.FormatQty(o.CumQty), "leaves_qty": ins.FormatQty(o.LeavesQty), "avg_px": ins.FormatPrice(o.AvgPx),
+	}
 }
 
 // Stop shuts the acceptor down and flushes the audit log and store. It is safe
@@ -169,6 +256,9 @@ func (s *Server) Stop() {
 		// quickfix's Acceptor.Stop blocks forever if the acceptor never started.
 		if s.started.Load() {
 			s.acceptor.Stop()
+		}
+		if s.Router != nil {
+			s.Router.Stop()
 		}
 		s.Engine.Stop()
 		if s.audit != nil {

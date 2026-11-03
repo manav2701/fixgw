@@ -1,0 +1,17 @@
+{
+  "binance": {
+    "base_url": "https://testnet.binance.vision",
+    "key_env": "BINANCE_TESTNET_KEY",
+    "secret_env": "BINANCE_TESTNET_SECRET"
+  },
+  "routes": [
+    {
+      "symbol": "ETH/USD",
+      "venue": "binance",
+      "venue_symbol": "ETHUSDT",
+      "tick": "0.01",
+      "step": "0.0001",
+      "min_qty": "0.0001"
+    }
+  ]
+}

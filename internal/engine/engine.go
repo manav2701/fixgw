@@ -24,6 +24,19 @@ type ReplaceRequest struct {
 	Type        oms.OrdType
 }
 
+// Router sends orders for some symbols to an external venue instead of the
+// internal book. Its methods must not block: they are called on the engine
+// goroutine.
+type Router interface {
+	Handles(symbol string) bool
+	// Validate checks an order against the venue's constraints before acceptance.
+	Validate(o oms.Order) error
+	// Submit hands an accepted order to the venue.
+	Submit(o oms.Order)
+	// CancelAtVenue cancels, best effort, an order the engine has closed locally.
+	CancelAtVenue(orderID string)
+}
+
 // Engine serialises all order flow through one goroutine. Every public method
 // hands a closure to that goroutine and waits, so books, the registry's
 // mutations and risk decisions happen in a single total order. That order is
@@ -36,6 +49,8 @@ type Engine struct {
 	log   *slog.Logger
 	books map[string]*Book
 	last  map[string]oms.Price // last trade price per symbol
+
+	router Router // optional; set before Start
 
 	cmds chan func()
 	quit chan struct{}
@@ -58,6 +73,11 @@ func New(reg *oms.Registry, ins oms.Instruments, rk *risk.Risk, log *slog.Logger
 	}
 	return e
 }
+
+// SetRouter routes the symbols r handles to an external venue. Call before Start.
+func (e *Engine) SetRouter(r Router) { e.router = r }
+
+func (e *Engine) routed(sym string) bool { return e.router != nil && e.router.Handles(sym) }
 
 func (e *Engine) Start() {
 	e.wg.Add(1)
@@ -108,6 +128,9 @@ func (e *Engine) Cancel(session, origClOrdID, clOrdID string) (execs []oms.Execu
 			return
 		}
 		e.book(ex.Symbol).Cancel(ex.OrderID)
+		if e.routed(ex.Symbol) {
+			e.router.CancelAtVenue(ex.OrderID)
+		}
 		execs = []oms.Execution{ex}
 	})
 	return
@@ -220,12 +243,23 @@ func (e *Engine) newOrder(o oms.Order) []oms.Execution {
 		return []oms.Execution{e.reg.Reject(o, rj.Reason, rj.Text)}
 	}
 
+	routed := e.routed(o.Symbol)
+	if routed {
+		if verr := e.router.Validate(o); verr != nil {
+			return []oms.Execution{e.reg.Reject(o, oms.RejOther, verr.Error())}
+		}
+	}
+
 	ack, err := e.reg.Accept(o)
 	if err != nil {
 		return []oms.Execution{e.reg.Reject(o, oms.RejDuplicateOrder, "duplicate ClOrdID")}
 	}
 	execs := []oms.Execution{ack}
 	accepted, _ := e.reg.ByID(ack.OrderID)
+	if routed {
+		e.router.Submit(accepted) // the venue's answers arrive asynchronously
+		return execs
+	}
 	return e.matchAndRest(execs, accepted)
 }
 
@@ -286,6 +320,10 @@ func (e *Engine) replace(req ReplaceRequest) ([]oms.Execution, *oms.CancelReject
 	}
 
 	cur, ok := e.reg.Get(req.Session, req.OrigClOrdID)
+	if ok && e.routed(cur.Symbol) {
+		e.reg.Reject(oms.Order{Session: req.Session, ClOrdID: req.ClOrdID}, oms.RejUnsupportedOrder, "replace not supported on routed instruments")
+		return nil, rejectWith(cur.Status, cur.OrderID, oms.CxlOther, "replace not supported on routed instruments")
+	}
 	if ok && !cur.Status.IsTerminal() {
 		if req.Type != cur.Type {
 			e.reg.Reject(oms.Order{Session: req.Session, ClOrdID: req.ClOrdID}, oms.RejOther, "")
@@ -335,6 +373,9 @@ func (e *Engine) massCancel(pred func(oms.Order) bool, text string) []oms.Execut
 	for _, o := range e.reg.OpenWhere(pred) {
 		e.book(o.Symbol).Cancel(o.OrderID)
 		execs = e.closeOut(execs, o.OrderID, text)
+		if e.routed(o.Symbol) {
+			e.router.CancelAtVenue(o.OrderID)
+		}
 	}
 	return execs
 }

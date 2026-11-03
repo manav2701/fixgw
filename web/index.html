@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fixgw</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="ops">
+  <div class="brand">fixgw <span class="muted">FIX 4.4 gateway</span></div>
+  <div class="pill" id="conn" data-state="down">connecting</div>
+  <div class="pill" id="halt" data-state="ok">trading live</div>
+  <div class="stat"><span id="rate">0</span><label>events/s</label></div>
+  <div class="stat"><span id="seq">0</span><label>last seq</label></div>
+  <form id="kill" autocomplete="off">
+    <input id="ks-token" type="password" placeholder="admin token" aria-label="Admin token" autocomplete="off">
+    <input id="ks-scope" type="text" placeholder="session (blank = all)" aria-label="Kill switch scope">
+    <label class="check"><input id="ks-mass" type="checkbox" checked> cancel open orders</label>
+    <button type="submit" id="ks-halt" class="danger">Halt</button>
+    <button type="button" id="ks-resume">Resume</button>
+    <span id="ks-msg" class="muted" role="status"></span>
+  </form>
+</header>
+
+<main>
+  <section class="panel" id="book-panel">
+    <h2>Order book
+      <select id="symbol" aria-label="Symbol"></select>
+      <span class="tag" id="routed" hidden></span>
+    </h2>
+    <div id="ladder" aria-live="off"></div>
+  </section>
+
+  <section class="panel" id="tape-panel">
+    <h2>FIX tape
+      <label class="check"><input id="hide-hb" type="checkbox" checked> hide heartbeats</label>
+      <label class="check"><input id="pause" type="checkbox"> pause</label>
+    </h2>
+    <div id="tape" role="log"></div>
+  </section>
+
+  <section class="panel" id="blotter-panel">
+    <h2>Blotter <span class="muted" id="blotter-count"></span></h2>
+    <div class="scroll">
+      <table id="blotter">
+        <thead><tr><th>Order</th><th>Session</th><th>Symbol</th><th>Side</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Filled</th><th class="num">Avg</th><th>Status</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" id="sessions-panel">
+    <h2>Sessions</h2>
+    <div id="sessions"></div>
+    <h2>Venue &amp; control events</h2>
+    <ul id="events"></ul>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
