@@ -84,12 +84,16 @@ func (h *Hub) Publish(kind string, data any) {
 	if h == nil {
 		return
 	}
-	b, err := json.Marshal(Event{Seq: h.seq.Add(1), Time: time.Now().UTC(), Kind: kind, Data: data})
+	seq := h.seq.Add(1)
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if len(h.subs) == 0 {
+		return // nobody is watching: skip the encoding
+	}
+	b, err := json.Marshal(Event{Seq: seq, Time: time.Now().UTC(), Kind: kind, Data: data})
 	if err != nil {
 		return
 	}
-	h.mu.RLock()
-	defer h.mu.RUnlock()
 	for s := range h.subs {
 		for {
 			select {

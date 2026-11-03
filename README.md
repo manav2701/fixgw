@@ -15,7 +15,7 @@ orders, and writes a tamper-evident audit trail.
 | 2 | FIX session layer: signed logon, sequence recovery, durable store, audit log, chaos proxy | done |
 | 3 | Matching engine, pre-trade risk, kill switch, cancel/replace | done |
 | 4 | Venue translation, WebSocket bridge, dashboard | done |
-| 5 | Conformance suite, benchmarks, fuzzing, backtest | planned |
+| 5 | Conformance suite, benchmarks, fuzzing, backtest | done |
 | 6 | Deployment and live demo | planned |
 
 ## What works today
@@ -90,6 +90,63 @@ events, and the kill switch (enter the admin token in the page). It is a static
 page with no build step, fed by a WebSocket at `/ws`. The feed never blocks the
 gateway: each browser has a bounded queue and the oldest events are dropped for a
 slow one.
+
+## Verification
+
+**Conformance** (`internal/conformance`). A table of named scenarios, each stating
+the `ExecType/OrdStatus` sequence a counterparty must see (new, cross, partial,
+IOC, FOK, market, cancel, replace including to a crossing price, duplicate,
+unknown symbol, self-trade). A set of invariants is applied to every report in every
+case: `CumQty + LeavesQty = OrderQty`, a fill has `LeavesQty 0`, `LastQty/LastPx`
+only on trades, unique `ExecID`s. A 3,000-operation random session checks no order
+ever moves backwards through the state machine and `CumQty` never falls.
+
+**Fuzzing.** Four targets, run for a short time in CI (`make fuzz`):
+decimal parse/format round trip, the FIX stream framer (any chunking gives the same
+messages), the audit redactor, and the order book (random add/cancel/reduce/match
+with the structural check and quantity conservation after every step).
+It found one real bug: the redactor's fast path missed a password field at the very
+start of a buffer, so it was written to the audit log and the dashboard tape in
+clear. Real FIX messages begin with `8=`, so this could not occur on the wire, but
+the guarantee should not depend on that. Fixed, with the input kept as a regression seed.
+
+**Benchmarks** (`make bench`). On an Intel Core Ultra 7 155H, Windows, Go 1.26,
+single run, so treat them as orders of magnitude:
+
+| Benchmark | Time per op |
+|---|---|
+| Book add + cancel | 0.5 µs |
+| Book match against a 5,000-order book | 0.07 µs |
+| Pre-trade risk check (200 open orders) | 3.4 µs, 0 allocations |
+| Full engine path, resting order | 10 µs (about 100k orders/s) |
+| Full engine path, every second order trades | 6 µs |
+| Event hub publish to 10 dashboards | 4.4 µs |
+
+"Full engine path" is the call into the engine goroutine, risk, registry and book,
+without FIX parsing or network. FIX parsing and the socket will dominate in practice;
+I have not measured the wire.
+
+The benchmark found a real scaling problem. The first run took **650 µs per order**:
+every order's risk check copied and sorted all open orders in the registry, so cost
+grew with the whole gateway's order count. A per-counterparty index of open orders
+(`Registry.OpenForCounterparty`) brought it to 10 µs. Cost now grows with one
+counterparty's open orders, which the open-order limit bounds.
+
+**Backtest** (`cmd/fixbt`, `internal/backtest`). A market maker that re-quotes every
+step around a random-walking mid and leans its prices against its inventory, against
+four noise traders sending a mix of marketable and resting orders.
+
+```bash
+go run ./cmd/fixbt -steps 5000 -dump run.csv    # simulate and record the action log
+go run ./cmd/fixbt -replay run.csv              # replay it
+```
+
+Both runs print the same SHA-256 digest of every execution report in order
+(wall-clock timestamps excluded), which is the proof that matching is deterministic:
+a recorded log reproduces a run exactly, also through the CSV file. Ledgers are
+checked to be zero-sum across accounts. The strategy is a toy and the flow is
+random, so the P&L figures say nothing about real markets; the point is a
+reproducible harness for exercising the engine and, later, a strategy.
 
 ## Recovery demo
 
@@ -167,6 +224,9 @@ encode my reading of the documented API, so expect to fix details on first conta
 ```
 cmd/fixgw           gateway binary
 cmd/fixsim          FIX initiator: scenarios and chaos driver
+cmd/fixbt           backtest and replay on the matching engine
+internal/conformance  FIX execution-report conformance table and invariants
+internal/backtest   deterministic simulation, action log, ledgers, digest
 internal/oms        order types, state machine, order registry, fixed-point decimals
 internal/engine     order book and the single-threaded matching engine
 internal/risk       pre-trade checks, rate limiter, kill switch
@@ -192,8 +252,8 @@ acknowledgement is not awaited before the client sees `New` (a venue reject arri
 as a cancel with the reason), fills are detected by polling (about a second of
 latency), and orders left at a venue stay there when the gateway stops. The
 dashboard feed is unauthenticated: keep the HTTP port on localhost or behind a
-reverse proxy. Matching is single-threaded by design; throughput has not been measured yet
-(Phase 5).
+reverse proxy. Matching is single-threaded by design; throughput is measured for
+the engine path only (see Verification), not for FIX parsing and the network.
 
 ## License
 

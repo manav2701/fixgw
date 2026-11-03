@@ -1,4 +1,4 @@
-.PHONY: build test race bench fuzz vet fmt run sim sim-all sim-trading sim-gap sim-reconnect
+.PHONY: build test race bench fuzz backtest vet fmt run sim sim-all sim-trading sim-gap sim-reconnect
 
 build:
 	go build -o bin/ ./cmd/...
@@ -12,8 +12,16 @@ race:
 bench:
 	go test -run '^$$' -bench . -benchmem ./...
 
+FUZZTIME ?= 30s
+
 fuzz:
-	go test -fuzz FuzzDecode -fuzztime 60s ./internal/codec
+	go test ./internal/oms -run '^$$' -fuzz '^FuzzDecimalRoundTrip$$' -fuzztime $(FUZZTIME)
+	go test ./internal/audit -run '^$$' -fuzz '^FuzzRedact$$' -fuzztime $(FUZZTIME)
+	go test ./internal/chaos -run '^$$' -fuzz '^FuzzFramer$$' -fuzztime $(FUZZTIME)
+	go test ./internal/engine -run '^$$' -fuzz '^FuzzBook$$' -fuzztime $(FUZZTIME)
+
+backtest:
+	go run ./cmd/fixbt -steps 5000
 
 vet:
 	go vet ./...
