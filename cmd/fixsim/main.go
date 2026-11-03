@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/manav2701/fixgw/internal/auth"
 	"github.com/manav2701/fixgw/internal/simclient"
@@ -16,7 +17,7 @@ import (
 
 func main() {
 	var (
-		scenario  = flag.String("scenario", "orders", "heartbeat | orders | risk | trading | gap | reconnect | authfail | all")
+		scenario  = flag.String("scenario", "orders", "heartbeat | orders | risk | trading | gap | reconnect | authfail | all | demo (runs until interrupted)")
 		peer      = flag.String("peer", "DEMO", "second counterparty for the trading scenario")
 		addr      = flag.String("addr", "127.0.0.1:5001", "gateway address")
 		sender    = flag.String("sender", "CLIENT1", "SenderCompID (this client)")
@@ -66,6 +67,16 @@ func main() {
 			return simclient.Trading(ctx, cfg, peerCfg)
 		},
 	}
+	if *scenario == "demo" {
+		pc, ok := creds[*peer]
+		if !ok {
+			fatal(fmt.Errorf("no credential for peer %q in %s", *peer, *credsPath))
+		}
+		peerCfg := cfg
+		peerCfg.SenderCompID, peerCfg.Username, peerCfg.Secret, peerCfg.Password = *peer, pc.Username, pc.Secret, pc.Password
+		runDemo(ctx, cfg, peerCfg)
+		return
+	}
 	names := []string{*scenario}
 	if *scenario == "all" {
 		// reconnect needs a fresh gateway store, so it is not part of "all".
@@ -90,6 +101,20 @@ func main() {
 	}
 	if failed {
 		os.Exit(1)
+	}
+}
+
+// runDemo keeps a live market running until interrupted, reconnecting after a
+// dropped session and refreshing the sessions every ten minutes.
+func runDemo(ctx context.Context, a, b simclient.Config) {
+	for ctx.Err() == nil {
+		if err := simclient.Demo(ctx, a, b, 10*time.Minute); err != nil {
+			fmt.Fprintln(os.Stderr, "fixsim demo:", err, "- retrying in 5s")
+			select {
+			case <-ctx.Done():
+			case <-time.After(5 * time.Second):
+			}
+		}
 	}
 }
 

@@ -16,7 +16,7 @@ orders, and writes a tamper-evident audit trail.
 | 3 | Matching engine, pre-trade risk, kill switch, cancel/replace | done |
 | 4 | Venue translation, WebSocket bridge, dashboard | done |
 | 5 | Conformance suite, benchmarks, fuzzing, backtest | done |
-| 6 | Deployment and live demo | planned |
+| 6 | Container image, compose stack with HTTPS, free-hosting guide, live demo market | done (not yet deployed anywhere; see [docs/DEPLOY.md](docs/DEPLOY.md)) |
 
 ## What works today
 
@@ -159,7 +159,16 @@ missing messages with `PossDupFlag=Y`. This runs as an automated test
 
 ## Quickstart
 
-Requires Go 1.26 or newer.
+**With Docker** (gateway plus a demo market maker, so the dashboard is alive at once):
+
+```bash
+FIXGW_ADMIN_TOKEN=$(openssl rand -hex 24) docker compose up --build
+```
+
+Open <http://127.0.0.1:8080/>. To put it on the internet for free, with HTTPS, see
+[docs/DEPLOY.md](docs/DEPLOY.md) (Oracle Cloud Always Free walkthrough).
+
+**From source.** Requires Go 1.26 or newer.
 
 ```bash
 FIXGW_ADMIN_TOKEN=change-me go run ./cmd/fixgw
@@ -170,6 +179,9 @@ In another terminal:
 ```bash
 go run ./cmd/fixsim -scenario all
 ```
+
+`fixsim -scenario demo` keeps a live market going until interrupted (a maker quoting
+three levels each side, a taker hitting the touch), which is what the compose file runs.
 
 Scenarios: `authfail`, `heartbeat`, `orders`, `risk`, `gap`, `trading` (two
 counterparties: partial fills, price improvement, self-trade prevention, FOK,
@@ -240,6 +252,8 @@ internal/bridge     event hub (drop-oldest fan-out) and the WebSocket feed
 internal/simclient  initiator used by fixsim and the integration tests
 web                 dashboard (static HTML, CSS, JS; embedded in the binary)
 docs/adr            architecture decision records
+docs/DEPLOY.md      free-hosting guide
+Dockerfile, docker-compose.yml, deploy/Caddyfile   container image and stack
 ```
 
 ## Limitations

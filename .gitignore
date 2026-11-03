@@ -21,3 +21,6 @@ credentials.local.json
 .idea/
 .vscode/
 .DS_Store
+
+# generated credentials
+/deploy/credentials.json
